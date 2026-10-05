@@ -158,6 +158,36 @@ class Order:
         return "\n".join(lines)
 
 
+class SalesRecord:
+    """คลาสบันทึกยอดขายของลูกค้าทั่วไป
+
+    ไม่เก็บชื่อหรือเบอร์โทร เก็บเฉพาะตัวเลขสรุป (จำนวนแก้ว ออเดอร์ ยอดขาย)
+    """
+
+    def __init__(self, guest_orders=0, guest_cups=0, guest_revenue=0):
+        self.guest_orders = guest_orders    # จำนวนออเดอร์
+        self.guest_cups = guest_cups        # จำนวนแก้วที่ขายไปแล้ว
+        self.guest_revenue = guest_revenue  # ยอดขายรวม (บาท)
+        self.cups_by_product = {}           # จำนวนแก้วแยกตามเมนู
+
+    def record_guest_sale(self, order):
+        """บันทึกออเดอร์ของลูกค้าทั่วไปที่ชำระเงินแล้ว"""
+        for item in order.items:
+            name = item["product"].name
+            self.cups_by_product[name] = (
+                self.cups_by_product.get(name, 0) + item["quantity"])
+            self.guest_cups += item["quantity"]
+        self.guest_orders += 1
+        self.guest_revenue += order.calculate_total()
+
+    def summary_rows(self):
+        """คืนรายการจำนวนแก้วแยกตามเมนู (เรียงจากขายได้มากไปน้อย)"""
+        ranked = sorted(self.cups_by_product.items(),
+                        key=lambda pair: pair[1], reverse=True)
+        return [{"เมนู": name, "ขายไปแล้ว (แก้ว)": cups}
+                for name, cups in ranked]
+
+
 # ---------------------------------------------------------------------------
 # ส่วนติดต่อผู้ใช้ (Streamlit)
 # ---------------------------------------------------------------------------
@@ -169,6 +199,7 @@ def init_state():
             Product(name, BASE_PRICE, DEFAULT_STOCK) for name in MENU_NAMES
         ]
         st.session_state.customers = []
+        st.session_state.sales = SalesRecord()
         st.session_state.order = None
         st.session_state.last_receipt = None
 
@@ -332,8 +363,10 @@ def pay_order(order):
             return
     for item in order.items:
         item["product"].update_stock(item["quantity"])
-    if order.customer.is_member():  # ลูกค้าทั่วไปไม่สะสมยอด
+    if order.customer.is_member():
         order.customer.add_spending(order.calculate_total())
+    else:  # ลูกค้าทั่วไป: ไม่สะสมยอดรายคน แต่บันทึกจำนวนแก้วที่ขายได้
+        st.session_state.sales.record_guest_sale(order)
     st.session_state.last_receipt = order.generate_receipt()
     st.session_state.order = None
     st.rerun()
@@ -374,15 +407,15 @@ def render_checkout():
         st.rerun()
 
 
-def render_customers():
-    """แท็บ 4: แสดงข้อมูลลูกค้าและยอดซื้อสะสม (ค้นหาได้)"""
-    st.subheader("ข้อมูลลูกค้าและยอดซื้อสะสม")
+def render_members():
+    """ตารางสมาชิกและยอดซื้อสะสม (ค้นหาได้)"""
+    st.subheader("สมาชิกและยอดซื้อสะสม")
     customers = st.session_state.customers
     if not customers:
         st.info("ยังไม่มีข้อมูลลูกค้า")
         return
     col1, col2 = st.columns(2)
-    col1.metric("จำนวนลูกค้า", len(customers))
+    col1.metric("จำนวนสมาชิก", len(customers))
     col2.metric("ยอดสะสมของสมาชิกรวม",
                 f"{sum(c.total_spent for c in customers):,.2f} บาท")
 
@@ -396,6 +429,28 @@ def render_customers():
         "ยอดสะสม (บาท)": c.total_spent,
     } for c in sorted(matches, key=lambda c: c.total_spent, reverse=True)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def render_guest_sales():
+    """สรุปยอดขายของลูกค้าทั่วไป (ไม่เก็บข้อมูลรายบุคคล)"""
+    st.subheader("ยอดขายลูกค้าทั่วไป (ไม่เก็บข้อมูล)")
+    sales = st.session_state.sales
+    col1, col2, col3 = st.columns(3)
+    col1.metric("ขายไปแล้ว (แก้ว)", sales.guest_cups)
+    col2.metric("จำนวนออเดอร์", sales.guest_orders)
+    col3.metric("ยอดขาย (บาท)", f"{sales.guest_revenue:,.2f}")
+    rows = sales.summary_rows()
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    else:
+        st.caption("ยังไม่มียอดขายจากลูกค้าทั่วไป")
+
+
+def render_customers():
+    """แท็บ 4: ข้อมูลสมาชิกและยอดขายลูกค้าทั่วไป"""
+    render_members()
+    st.divider()
+    render_guest_sales()
 
 
 def render_restock():
@@ -442,7 +497,7 @@ def main():
     st.caption("เครื่องดื่มแก้วละ 50 บาท | Add-on: แยมสตรอวเบอรี่ +5, ครีมชีส +20")
 
     tabs = st.tabs(["📋 เมนูและสต็อก", "🛒 สั่งซื้อ", "💳 ตะกร้าและชำระเงิน",
-                    "👤 ลูกค้า", "📦 เติมสต็อก"])
+                    "👤 ลูกค้าและยอดขาย", "📦 เติมสต็อก"])
     renderers = [render_menu, render_order, render_checkout,
                  render_customers, render_restock]
     for tab, render in zip(tabs, renderers):
