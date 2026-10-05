@@ -171,9 +171,6 @@ def init_state():
         st.session_state.customers = []
         st.session_state.order = None
         st.session_state.last_receipt = None
-        # ตัวแปรสถิติสำหรับลูกค้าทั่วไป
-        st.session_state.guest_cups_sold = 0
-        st.session_state.guest_total_spent = 0
 
 
 def find_customers(keyword):
@@ -275,8 +272,8 @@ def select_customer():
     if mode == MODE_OLD:
         return pick_existing_customer()
     if mode == MODE_GUEST:
-        # ลูกค้าทั่วไป: ไม่ถูกเพิ่มลงรายชื่อลูกค้า 
-        st.info("จะไม่บันทึกเป็นสมาชิก แต่จะนำจำนวนแก้วและยอดรวมไปสะสมในสถิติของร้าน "
+        # ลูกค้าทั่วไป: ไม่ถูกเพิ่มลงรายชื่อลูกค้า และไม่สะสมยอด
+        st.info("ไม่บันทึกข้อมูลลูกค้าและไม่สะสมยอด "
                 "(ยังตัดสต็อกและออกใบเสร็จตามปกติ)")
         return Customer(GUEST_NAME, "")
     add_customer_form()
@@ -333,20 +330,10 @@ def pay_order(order):
         if order.reserved_quantity(product) > product.stock:
             st.error(f"สต็อก {product.name} ไม่เพียงพอ กรุณาแก้ไขตะกร้า")
             return
-            
-    total_qty = 0
     for item in order.items:
         item["product"].update_stock(item["quantity"])
-        total_qty += item["quantity"]
-        
-    if order.customer.is_member():  
-        # ลูกค้าสมาชิก: สะสมยอดในบัญชีรายบุคคล
+    if order.customer.is_member():  # ลูกค้าทั่วไปไม่สะสมยอด
         order.customer.add_spending(order.calculate_total())
-    else: 
-        # ลูกค้าทั่วไป: สะสมสถิติแก้วและยอดเงินรวมของร้าน
-        st.session_state.guest_cups_sold += total_qty
-        st.session_state.guest_total_spent += order.calculate_total()
-        
     st.session_state.last_receipt = order.generate_receipt()
     st.session_state.order = None
     st.rerun()
@@ -389,34 +376,26 @@ def render_checkout():
 
 def render_customers():
     """แท็บ 4: แสดงข้อมูลลูกค้าและยอดซื้อสะสม (ค้นหาได้)"""
-    st.subheader("ข้อมูลลูกค้าสมาชิก")
+    st.subheader("ข้อมูลลูกค้าและยอดซื้อสะสม")
     customers = st.session_state.customers
-    
+    if not customers:
+        st.info("ยังไม่มีข้อมูลลูกค้า")
+        return
     col1, col2 = st.columns(2)
-    col1.metric("จำนวนลูกค้าสมาชิก", len(customers))
+    col1.metric("จำนวนลูกค้า", len(customers))
     col2.metric("ยอดสะสมของสมาชิกรวม",
                 f"{sum(c.total_spent for c in customers):,.2f} บาท")
 
-    if customers:
-        keyword = st.text_input("🔍 ค้นหาลูกค้าสมาชิก (ชื่อหรือเบอร์โทร)",
-                                key="customer_table_search")
-        matches = find_customers(keyword)
-        st.caption(f"พบ {len(matches)} จาก {len(customers)} คน")
-        rows = [{
-            "ชื่อ": c.name,
-            "เบอร์โทร": c.phone,
-            "ยอดสะสม (บาท)": c.total_spent,
-        } for c in sorted(matches, key=lambda c: c.total_spent, reverse=True)]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    else:
-        st.info("ยังไม่มีข้อมูลลูกค้าสมาชิก")
-        
-    # --- เพิ่มส่วนแสดงสถิติสำหรับลูกค้าทั่วไป ---
-    st.divider()
-    st.subheader("สถิติลูกค้าทั่วไป (Non-Member)")
-    col3, col4 = st.columns(2)
-    col3.metric("ขายให้ลูกค้าทั่วไปทั้งหมด (แก้ว)", st.session_state.guest_cups_sold)
-    col4.metric("ยอดเงินรวมจากลูกค้าทั่วไป", f"{st.session_state.guest_total_spent:,.2f} บาท")
+    keyword = st.text_input("🔍 ค้นหาลูกค้า (ชื่อหรือเบอร์โทร)",
+                            key="customer_table_search")
+    matches = find_customers(keyword)
+    st.caption(f"พบ {len(matches)} จาก {len(customers)} คน")
+    rows = [{
+        "ชื่อ": c.name,
+        "เบอร์โทร": c.phone,
+        "ยอดสะสม (บาท)": c.total_spent,
+    } for c in sorted(matches, key=lambda c: c.total_spent, reverse=True)]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def render_restock():
@@ -473,3 +452,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
