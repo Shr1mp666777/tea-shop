@@ -20,9 +20,13 @@ ADDONS = {
 BASE_PRICE = 50
 DEFAULT_STOCK = 20
 LOW_STOCK = 5
+MAX_RESTOCK = 999
 MENU_NAMES = ["ชาไทย", "ชานม", "โกโก้", "มัทฉะ", "นมสดสตรอวเบอรี่"]
 
-NEW_CUSTOMER = -1  # ค่าพิเศษใน selectbox สำหรับ "เพิ่มลูกค้าใหม่"
+MODE_OLD = "ลูกค้าเดิม"
+MODE_NEW = "ลูกค้าใหม่"
+MODE_GUEST = "ลูกค้าทั่วไป (ไม่เก็บข้อมูล)"
+GUEST_NAME = "ลูกค้าทั่วไป"
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +57,13 @@ class Product:
         self.stock -= quantity
         return True
 
+    def add_stock(self, quantity):
+        """เติมสต็อกตามจำนวนที่ระบุ คืนค่า True ถ้าเติมสำเร็จ"""
+        if quantity <= 0:
+            return False
+        self.stock += quantity
+        return True
+
 
 class Customer:
     """คลาสลูกค้า"""
@@ -71,6 +82,16 @@ class Customer:
         """คืนข้อความข้อมูลลูกค้าและยอดสะสม"""
         return (f"{self.name} | โทร {self.phone} | "
                 f"ยอดสะสม {self.total_spent:,.2f} บาท")
+
+    def is_member(self):
+        """เป็นสมาชิกหรือไม่ (ลูกค้าทั่วไปไม่มีเบอร์โทร ไม่เก็บข้อมูล)"""
+        return bool(self.phone)
+
+    def display_label(self):
+        """คืนข้อความชื่อลูกค้าสำหรับแสดงในตะกร้าและใบเสร็จ"""
+        if self.is_member():
+            return f"{self.name} ({self.phone})"
+        return self.name
 
 
 class Order:
@@ -118,7 +139,7 @@ class Order:
             line,
             "      ร้านชาเย็น - ใบเสร็จรับเงิน",
             line,
-            f"ลูกค้า: {self.customer.name} ({self.customer.phone})",
+            f"ลูกค้า: {self.customer.display_label()}",
             "-" * 44,
         ]
         for item in self.items:
@@ -152,6 +173,13 @@ def init_state():
         st.session_state.last_receipt = None
 
 
+def find_customers(keyword):
+    """ค้นหาลูกค้าจากชื่อหรือเบอร์โทร (ไม่สนตัวพิมพ์เล็ก/ใหญ่)"""
+    keyword = keyword.strip().lower()
+    return [c for c in st.session_state.customers
+            if keyword in c.name.lower() or keyword in c.phone]
+
+
 def render_menu():
     """แท็บ 1: แสดงรายการเครื่องดื่มและสต็อกคงเหลือ"""
     st.subheader("เมนูเครื่องดื่มและสต็อก")
@@ -174,45 +202,81 @@ def render_menu():
         st.write(f"- {name} (+{price} บาท)")
 
 
-def select_customer():
-    """เลือกลูกค้าเดิมหรือเพิ่มลูกค้าใหม่ คืนค่า Customer หรือ None"""
+def add_customer_form():
+    """ฟอร์มเพิ่มลูกค้าใหม่ (ถ้าเบอร์ซ้ำจะใช้ลูกค้าเดิม)"""
     customers = st.session_state.customers
-    options = list(range(len(customers))) + [NEW_CUSTOMER]
-
-    def label(index):
-        if index == NEW_CUSTOMER:
-            return "+ เพิ่มลูกค้าใหม่"
-        return f"{customers[index].name} ({customers[index].phone})"
-
-    # ตั้งค่าลูกค้าที่เพิ่งเพิ่ม/พบซ้ำ ก่อนสร้าง selectbox (แก้หลังสร้างไม่ได้)
-    if "pending_customer_idx" in st.session_state:
-        st.session_state.customer_idx = st.session_state.pop(
-            "pending_customer_idx")
-
-    choice = st.selectbox("ลูกค้า", options, format_func=label,
-                          key="customer_idx")
-    if choice != NEW_CUSTOMER:
-        return customers[choice]
-
     with st.form("new_customer_form", clear_on_submit=True):
         name = st.text_input("ชื่อลูกค้า")
         phone = st.text_input("เบอร์โทรศัพท์ (9-10 หลัก)")
         submitted = st.form_submit_button("บันทึกลูกค้าใหม่")
-    if submitted:
-        name, phone = name.strip(), phone.strip()
-        if not name:
-            st.error("กรุณากรอกชื่อลูกค้า")
-        elif not (phone.isdigit() and len(phone) in (9, 10)):
-            st.error("เบอร์โทรต้องเป็นตัวเลข 9-10 หลัก")
-        else:
-            # ถ้าเบอร์ซ้ำ ใช้ลูกค้าเดิมเพื่อสะสมยอดต่อเนื่อง
-            for index, customer in enumerate(customers):
-                if customer.phone == phone:
-                    st.session_state.pending_customer_idx = index
-                    st.rerun()
+    if not submitted:
+        return
+
+    name, phone = name.strip(), phone.strip()
+    if not name:
+        st.error("กรุณากรอกชื่อลูกค้า")
+    elif not (phone.isdigit() and len(phone) in (9, 10)):
+        st.error("เบอร์โทรต้องเป็นตัวเลข 9-10 หลัก")
+    else:
+        # เบอร์ซ้ำ = ลูกค้าเดิม เพื่อสะสมยอดต่อเนื่อง
+        if not any(c.phone == phone for c in customers):
             customers.append(Customer(name, phone))
-            st.session_state.pending_customer_idx = len(customers) - 1
-            st.rerun()
+        # ให้รอบถัดไปเลือกลูกค้าคนนี้ให้เอง (ตั้งค่า widget หลังสร้างไม่ได้)
+        st.session_state.pending_customer_phone = phone
+        st.rerun()
+
+
+def pick_existing_customer():
+    """ค้นหาและเลือกลูกค้าเดิม คืนค่า Customer หรือ None"""
+    total = len(st.session_state.customers)
+    keyword = st.text_input("🔍 ค้นหาลูกค้า (ชื่อหรือเบอร์โทร)",
+                            key="customer_search")
+    matches = find_customers(keyword)
+    st.caption(f"พบ {len(matches)} จาก {total} คน")
+    if not matches:
+        st.warning("ไม่พบลูกค้าที่ค้นหา ลองเปลี่ยนคำค้น "
+                   f"หรือเลือก \"{MODE_NEW}\"")
+        return None
+
+    by_phone = {c.phone: c for c in matches}
+    # ถ้าลูกค้าที่เลือกไว้หลุดจากผลค้นหา ให้ล้างค่า (กลับไปเลือกคนแรก)
+    if st.session_state.get("customer_pick") not in by_phone:
+        st.session_state.pop("customer_pick", None)
+    phone = st.selectbox(
+        "เลือกลูกค้า", list(by_phone),
+        format_func=lambda p: f"{by_phone[p].name} ({p})",
+        key="customer_pick")
+    return by_phone[phone]
+
+
+def select_customer():
+    """เลือกลูกค้าเดิม (พร้อมค้นหา) หรือเพิ่มลูกค้าใหม่"""
+    # ลูกค้าที่เพิ่งเพิ่ม: ตั้งค่า widget ก่อนสร้างในรอบนี้
+    pending = st.session_state.pop("pending_customer_phone", None)
+    if pending:
+        st.session_state.customer_mode = MODE_OLD
+        st.session_state.customer_search = ""
+        st.session_state.customer_pick = pending
+
+    modes = [MODE_NEW, MODE_GUEST]
+    if st.session_state.customers:
+        modes = [MODE_OLD] + modes
+    else:
+        st.info("ยังไม่มีลูกค้าสมาชิกในระบบ")
+    # ถ้าค่าที่จำไว้ไม่อยู่ในตัวเลือก ให้ล้างเพื่อกลับไปค่าเริ่มต้น
+    if st.session_state.get("customer_mode") not in modes:
+        st.session_state.pop("customer_mode", None)
+    mode = st.radio("ประเภทลูกค้า", modes, horizontal=True,
+                    key="customer_mode", label_visibility="collapsed")
+
+    if mode == MODE_OLD:
+        return pick_existing_customer()
+    if mode == MODE_GUEST:
+        # ลูกค้าทั่วไป: ไม่ถูกเพิ่มลงรายชื่อลูกค้า และไม่สะสมยอด
+        st.info("ไม่บันทึกข้อมูลลูกค้าและไม่สะสมยอด "
+                "(ยังตัดสต็อกและออกใบเสร็จตามปกติ)")
+        return Customer(GUEST_NAME, "")
+    add_customer_form()
     return None
 
 
@@ -222,7 +286,7 @@ def render_order():
     order = st.session_state.order
     if order is not None and order.items:
         customer = order.customer
-        st.info(f"ตะกร้าของ **{customer.name}** ({customer.phone}) "
+        st.info(f"ตะกร้าของ **{customer.display_label()}** "
                 "- ชำระเงินหรือล้างตะกร้าก่อนจึงจะเปลี่ยนลูกค้าได้")
     else:
         customer = select_customer()
@@ -268,7 +332,8 @@ def pay_order(order):
             return
     for item in order.items:
         item["product"].update_stock(item["quantity"])
-    order.customer.add_spending(order.calculate_total())
+    if order.customer.is_member():  # ลูกค้าทั่วไปไม่สะสมยอด
+        order.customer.add_spending(order.calculate_total())
     st.session_state.last_receipt = order.generate_receipt()
     st.session_state.order = None
     st.rerun()
@@ -290,7 +355,7 @@ def render_checkout():
             st.info("ยังไม่มีรายการในตะกร้า กรุณาสั่งซื้อก่อน")
         return
 
-    st.write(f"ลูกค้า: **{order.customer.name}** ({order.customer.phone})")
+    st.write(f"ลูกค้า: **{order.customer.display_label()}**")
     rows = [{
         "เมนู": item["product"].name,
         "Add-on": ", ".join(name for name, _ in item["addons"]) or "-",
@@ -310,7 +375,7 @@ def render_checkout():
 
 
 def render_customers():
-    """แท็บ 4: แสดงข้อมูลลูกค้าและยอดซื้อสะสม"""
+    """แท็บ 4: แสดงข้อมูลลูกค้าและยอดซื้อสะสม (ค้นหาได้)"""
     st.subheader("ข้อมูลลูกค้าและยอดซื้อสะสม")
     customers = st.session_state.customers
     if not customers:
@@ -318,14 +383,54 @@ def render_customers():
         return
     col1, col2 = st.columns(2)
     col1.metric("จำนวนลูกค้า", len(customers))
-    col2.metric("ยอดขายสะสมรวม",
+    col2.metric("ยอดสะสมของสมาชิกรวม",
                 f"{sum(c.total_spent for c in customers):,.2f} บาท")
+
+    keyword = st.text_input("🔍 ค้นหาลูกค้า (ชื่อหรือเบอร์โทร)",
+                            key="customer_table_search")
+    matches = find_customers(keyword)
+    st.caption(f"พบ {len(matches)} จาก {len(customers)} คน")
     rows = [{
         "ชื่อ": c.name,
         "เบอร์โทร": c.phone,
         "ยอดสะสม (บาท)": c.total_spent,
-    } for c in sorted(customers, key=lambda c: c.total_spent, reverse=True)]
+    } for c in sorted(matches, key=lambda c: c.total_spent, reverse=True)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def render_restock():
+    """แท็บ 5: เติมสต็อกสินค้า"""
+    st.subheader("เติมสต็อก")
+    message = st.session_state.pop("restock_msg", None)
+    if message:
+        st.success(message)
+
+    products = st.session_state.products
+    with st.form("restock_form"):
+        idx = st.selectbox("เมนูที่ต้องการเติม", range(len(products)),
+                           format_func=lambda i: products[i].display_info())
+        amount = st.number_input("จำนวนที่เติม (แก้ว)", min_value=1,
+                                 max_value=MAX_RESTOCK, value=10, step=1)
+        submitted = st.form_submit_button("เติมสต็อก", type="primary")
+    if submitted:
+        product = products[idx]
+        if product.add_stock(int(amount)):
+            st.session_state.restock_msg = (
+                f"เติม {product.name} +{int(amount)} แก้ว "
+                f"(คงเหลือ {product.stock} แก้ว)")
+            st.rerun()
+
+    st.divider()
+    if st.button(f"เติมทุกเมนูให้ครบ {DEFAULT_STOCK} แก้ว"):
+        added = 0
+        for product in products:
+            missing = DEFAULT_STOCK - product.stock
+            if missing > 0 and product.add_stock(missing):
+                added += missing
+        st.session_state.restock_msg = (
+            f"เติมสต็อกรวม {added} แก้ว" if added
+            else f"ทุกเมนูมีสต็อกถึง {DEFAULT_STOCK} แก้วอยู่แล้ว")
+        st.rerun()
 
 
 def main():
@@ -336,18 +441,15 @@ def main():
     st.title("🧋 ระบบจัดการร้านชาเย็น")
     st.caption("เครื่องดื่มแก้วละ 50 บาท | Add-on: แยมสตรอวเบอรี่ +5, ครีมชีส +20")
 
-    tab_menu, tab_order, tab_checkout, tab_customers = st.tabs(
-        ["📋 เมนูและสต็อก", "🛒 สั่งซื้อ", "💳 ตะกร้าและชำระเงิน",
-         "👤 ลูกค้า"])
-    with tab_menu:
-        render_menu()
-    with tab_order:
-        render_order()
-    with tab_checkout:
-        render_checkout()
-    with tab_customers:
-        render_customers()
+    tabs = st.tabs(["📋 เมนูและสต็อก", "🛒 สั่งซื้อ", "💳 ตะกร้าและชำระเงิน",
+                    "👤 ลูกค้า", "📦 เติมสต็อก"])
+    renderers = [render_menu, render_order, render_checkout,
+                 render_customers, render_restock]
+    for tab, render in zip(tabs, renderers):
+        with tab:
+            render()
 
 
 if __name__ == "__main__":
     main()
+
